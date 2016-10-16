@@ -251,26 +251,25 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         }
     }
     
-    var speechRecognitionAlert: UIAlertController!
+    var speechRecognitionAlert: UIAlertController?
+    
     func voiceSearch() {
         if navigationItem.leftBarButtonItem != nil { // already an existing search
             cancelSearch(reload:false)            
         }
         
         speechRecognitionAlert = UIAlertController(title: "Vocal search...", message: "Please say the name of the movie you wish to find:", preferredStyle: .alert)
-        speechRecognitionAlert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: { _ in
+        speechRecognitionAlert!.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: { _ in
             self.recognitionTask?.cancel()
         }))
-        present(speechRecognitionAlert, animated: true, completion: { _ in
+        
+        present(speechRecognitionAlert!, animated: true, completion: { _ in
             if TARGET_OS_SIMULATOR != 0 {
                 self.searchMovies(query: "X-Men")
             }
             else {
                 try! self.startRecording()
             }
-            self.speechRecognitionAlert.dismiss(animated: true, completion: {
-                self.speechRecognitionAlert = nil
-            })
         })
     }
     
@@ -335,6 +334,12 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
     func searchMovies(query:String) {
         if query.isEmpty {
             return
+        }
+        
+        if speechRecognitionAlert != nil {
+            speechRecognitionAlert!.dismiss(animated: true, completion: {
+                self.speechRecognitionAlert = nil
+            })
         }
         
         navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancelSearchAction))
