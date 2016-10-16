@@ -370,7 +370,10 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         
         present(speechRecognitionAlert!, animated: true, completion: { _ in
             if TARGET_OS_SIMULATOR != 0 {
-                self.searchMovies(query: "Dinner With")
+                self.searchMovies(query: "Back to the Future")
+                self.speechRecognitionAlert?.dismiss(animated: true, completion: { 
+                    self.speechRecognitionAlert = nil
+                })
             }
             else {
                 try! self.startRecording()
