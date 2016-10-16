@@ -9,36 +9,27 @@
 import UIKit
 import MBProgressHUD
 import Speech
+import AFNetworking
 
 class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate {
 
-    var movies = [Movie]()
+    private var movies = [Movie]()
     
-    var page = 0
+    private var page = 0
     
     // tmdb lists max 1000 for paging request https://developers.themoviedb.org/3/discover/movie-discover
-    var maxPage = 1000
+    private var maxPage = 1000
     
-    var genreMap = [Int : String]()
+    private var genreMap = [Int : String]()
     
     override func viewDidLoad() {
         super.viewDidLoad()
         
         if APIKey == APIKeyNotSet {
-            let alert = UIAlertController(title: "API Key Error", message: "API Key missing. Please add it to APIKey.swift", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
-            present(alert, animated: true, completion: nil)
-                
-            return
+            alertAPIKeyMissing()
         }
         
-        DataProvider.sharedInstance.getGenreList { (genres:[Int : String], error:Error?) in
-            if error != nil {
-                self.alertCommunicationError()
-                return
-            }
-            self.genreMap = genres
-        }
+        loadGenres()
         
         navigationItem.rightBarButtonItem = microphoneButton
         microphoneButton.isEnabled = false
@@ -46,24 +37,92 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         setupSpeechRecognition()
 
         loadMovies(currentPage: page)
+        
+        setupRefreshControl()
+    }
+    
+    private func alertAPIKeyMissing() {
+        let alert = UIAlertController(title: "API Key Error", message: "API Key missing. Please add it to APIKey.swift", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default, handler: nil))
+        present(alert, animated: true, completion: nil)
+        
+        return
+    }
+    
+    private func loadGenres() {
+        DataProvider.sharedInstance.getGenreList { (genres:[Int : String], error:Error?) in
+            if error != nil {
+                self.alertCommunicationError()
+                return
+            }
+            
+            self.genreMap = genres
+        }
+    }
+    
+    func setupRefreshControl() {
+        let refresh = UIRefreshControl()
+        refresh.addTarget(self, action: #selector(refreshMovies), for: .valueChanged)
+        
+        tableView.refreshControl = refresh
     }
     
     override func viewWillDisappear(_ animated: Bool) {
-        title = " "
+        title = " " // so back button doesn't waste space on navigation bar
+        
         super.viewWillDisappear(animated)
+        
+        AFNetworkReachabilityManager.shared().stopMonitoring()
     }
+    
+    let titlePopularMovies = "Popular movies"
+    let titleSearchResults = "Search results"
+    
+    var communicationError = false
     
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        title = "Popular movies"
+        title = (searchQuery ?? "").isEmpty ? titlePopularMovies : titleSearchResults
+        
+        setupReachabilityWatcher()
+    }
+    
+    private func setupReachabilityWatcher() {
+        AFNetworkReachabilityManager.shared().startMonitoring()
+        
+        AFNetworkReachabilityManager.shared().setReachabilityStatusChange { (status:AFNetworkReachabilityStatus) in
+            if status != AFNetworkReachabilityStatus.notReachable {
+                if self.movies.count == 0 && self.searchQuery == nil {
+                    self.page = 0
+                    self.loadMovies(currentPage: self.page)
+                    
+                    return
+                }
+                
+                if self.genreMap.count == 0 {
+                    self.loadGenres()
+                }
+                
+                // Reload visible rows in case internet connection was lost while displaying them
+                if self.communicationError {
+                    if let paths = self.tableView.indexPathsForVisibleRows {
+                        self.communicationError = false
+                        self.tableView.reloadRows(at: paths, with: .none)
+                    }
+                }
+            }
+        }
     }
     
     override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
         
-        tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: false)
-        movies.removeSubrange(Range(uncheckedBounds: (lower: 20, upper: movies.count - 1)))
-        tableView.reloadData()
+        // If memory warning remove excess movies
+        if movies.count > 20 {
+            tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: false)
+            movies.removeSubrange(Range(uncheckedBounds: (lower: 20, upper: movies.count - 1)))
+            tableView.reloadData()
+        }
     }
     
     // MARK: - Segues
@@ -113,7 +172,7 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
     // MARK: - Load movies
     
     var loadInProgress = false
-    func loadMovies(currentPage:Int) {
+    private func loadMovies(currentPage:Int) {
         if loadInProgress || currentPage >= maxPage {
             return
         }
@@ -149,8 +208,12 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         }
     }
     
-    func handleMoviesResponse(movies:[Movie], pages:Int, error:Error?) {
+    private func handleMoviesResponse(movies:[Movie], pages:Int, error:Error?) {
         loadInProgress = false
+        
+        if refreshControl?.isRefreshing ?? false {
+            refreshControl?.endRefreshing()
+        }
         
         MBProgressHUD.hide(for: self.navigationController!.view, animated: true)
         tableView.tableFooterView = nil
@@ -176,11 +239,42 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         self.movies += movies
         
         self.tableView.insertRows(at: paths, with: .fade)
+        
+        if self.movies.count == 0 {
+            showNoResultsView()
+        }
+        else {
+            tableView.tableFooterView = nil
+        }
     }
     
-    var communicationAlert:UIAlertController?
+    private func showNoResultsView() {
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: tableView.frame.size.width, height: 300))
+        let label = UILabel(frame: view.frame.insetBy(dx: 10, dy: 10))
+        label.text = (self.searchQuery ?? "").isEmpty ? "No results!" : "Your query:\n'" + self.searchQuery! + "'\nreturned no results"
+        label.textAlignment = .center
+        label.font = UIFont.systemFont(ofSize: 30)
+        label.minimumScaleFactor = 0.4
+        label.adjustsFontSizeToFitWidth = true
+        label.numberOfLines = 0
+        label.center = view.center
+        
+        view.addSubview(label)
+        
+        tableView.tableFooterView = view
+    }
     
-    func alertCommunicationError() {
+    @objc private func refreshMovies() {
+        page = 0
+        loadMovies(currentPage: page)    
+    }
+    
+    // MARK: Communication error alert
+    private var communicationAlert:UIAlertController?
+    
+    private func alertCommunicationError() {
+        communicationError = true
+        
         if communicationAlert != nil {
             return
         }
@@ -188,6 +282,8 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         communicationAlert = UIAlertController(title: "Communication error", message: "⚠", preferredStyle: .alert)
         
         communicationAlert!.addAction(UIAlertAction(title: "Retry", style: .default, handler: { (action:UIAlertAction) in
+            self.communicationError = false
+            
             self.loadMovies(currentPage: self.page)
             
             if let paths = self.tableView.indexPathsForVisibleRows {
@@ -204,7 +300,8 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         present(communicationAlert!, animated: true)
     }
     
-    func genreIdsToText(_ genres:[Int]) -> String {
+    // MARK: Genres
+    private func genreIdsToText(_ genres:[Int]) -> String {
         if genreMap.count == 0 {
             return ""
         }
@@ -220,7 +317,7 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
     }
     
     // MARK: Search
-    lazy var microphoneButton: UIBarButtonItem = {
+    private lazy var microphoneButton: UIBarButtonItem = {
         let button = UIBarButtonItem(image: UIImage(named:"microphone"), style: .done, target: self, action: #selector(voiceSearch))
         return button
     }()
@@ -233,7 +330,7 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
     
     private let audioEngine = AVAudioEngine()
     
-    func setupSpeechRecognition() {
+    private func setupSpeechRecognition() {
         speechRecognizer.delegate = self
         SFSpeechRecognizer.requestAuthorization { authStatus in
             /*
@@ -251,21 +348,29 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         }
     }
     
-    var speechRecognitionAlert: UIAlertController?
+    private var speechRecognitionAlert: UIAlertController?
+    private var speechRecognitionTimeout: Timer?
     
-    func voiceSearch() {
+    private func restartSpeechTimeout() {
+        speechRecognitionTimeout?.invalidate()
+        
+        speechRecognitionTimeout = Timer.scheduledTimer(timeInterval: 2, target: self, selector: #selector(stopRecording), userInfo: nil, repeats: false)
+    }
+    
+    @objc private func voiceSearch() {
         if navigationItem.leftBarButtonItem != nil { // already an existing search
             cancelSearch(reload:false)            
         }
         
         speechRecognitionAlert = UIAlertController(title: "Vocal search...", message: "Please say the name of the movie you wish to find:", preferredStyle: .alert)
+        
         speechRecognitionAlert!.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: { _ in
             self.recognitionTask?.cancel()
         }))
         
         present(speechRecognitionAlert!, animated: true, completion: { _ in
             if TARGET_OS_SIMULATOR != 0 {
-                self.searchMovies(query: "X-Men")
+                self.searchMovies(query: "Dinner With")
             }
             else {
                 try! self.startRecording()
@@ -301,10 +406,11 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         // We keep a reference to the task so that it can be cancelled.
         recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { result, error in
             var isFinal = false
-            
             if let result = result {
                 isFinal = result.isFinal
-                self.speechRecognitionAlert.message = result.bestTranscription.formattedString
+                if let alert = self.speechRecognitionAlert {
+                    alert.message = result.bestTranscription.formattedString
+                }
             }
             
             if error != nil || isFinal {
@@ -315,7 +421,18 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
                 self.recognitionTask = nil
                 
                 self.microphoneButton.isEnabled = true
+            }
+            
+            if isFinal {
                 self.searchMovies(query: result!.bestTranscription.formattedString)
+            }
+            else {
+                if error == nil {
+                    self.restartSpeechTimeout()
+                }
+                else {
+                    self.cancelSearch()
+                }
             }
         }
         
@@ -329,36 +446,51 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         try audioEngine.start()
     }
     
-    var searchQuery:String?
-    
-    func searchMovies(query:String) {
-        if query.isEmpty {
-            return
-        }
+    @objc private func stopRecording() {
+        audioEngine.stop()
+        recognitionRequest?.endAudio()
+        
+        speechRecognitionTimeout?.invalidate()
+        speechRecognitionTimeout = nil
         
         if speechRecognitionAlert != nil {
             speechRecognitionAlert!.dismiss(animated: true, completion: {
                 self.speechRecognitionAlert = nil
             })
         }
+    }
+    
+    var searchQuery:String?
+    
+    private func searchMovies(query:String) {
+        speechRecognitionTimeout?.invalidate()
+        speechRecognitionTimeout = nil
+        
+        if query.isEmpty {
+            cancelSearch(reload:true)
+            return
+        }
         
         navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancelSearchAction))
             
         searchQuery = query
         
-        tableView.scrollToRow(at: IndexPath(row:0, section:0), at: .top, animated: false)
+        if movies.count > 0 {
+            tableView.scrollToRow(at: IndexPath(row:0, section:0), at: .top, animated: false)
+        }
         
         movies = []
         tableView.reloadData()
         
+        title = titleSearchResults
         loadMovies(currentPage: 1)
     }
     
-    func cancelSearchAction() { // action selectors can't have parameters like below
+    @objc private func cancelSearchAction() { // action selectors can't have parameters like below
         cancelSearch()
     }
     
-    func cancelSearch(reload: Bool = true) {
+    private func cancelSearch(reload: Bool = true) {
         navigationItem.leftBarButtonItem = nil
         searchQuery = nil
         movies = []
@@ -367,6 +499,10 @@ class MovieListViewController: UITableViewController, SFSpeechRecognizerDelegate
         maxPage = 1000
         
         if reload {
+            // don't want to bother reloading if there's an existing search in the table view
+            // but do want to reload back to the popular list otherwise
+            title = titlePopularMovies
+            
             tableView.reloadData()
             
             loadMovies(currentPage: page)

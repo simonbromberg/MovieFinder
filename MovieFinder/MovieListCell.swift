@@ -18,7 +18,9 @@ class MovieListCell : UITableViewCell {
             
             imageView!.image = UIImage(named: "placeholder")        
             
-            imageLoadDataTask = imageView!.downloadedFrom(url: imageURL!)            
+            if let url = imageURL {
+                imageLoadDataTask = imageView!.downloadedFrom(url: url)
+            }
         }
     }
     
